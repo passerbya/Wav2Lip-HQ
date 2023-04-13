@@ -56,6 +56,82 @@ args.img_size = 96
 if os.path.isfile(args.face) and args.face.split('.')[1] in ['jpg', 'png', 'jpeg']:
 	args.static = True
 
+	
+def Laplacian_Pyramid_Blending_with_mask(A, B, m, num_levels=6):
+	# generate Gaussian pyramid for A,B and mask
+	GA = A.copy()
+	GB = B.copy()
+	GM = m.copy()
+	gpA = [GA]
+	gpB = [GB]
+	gpM = [GM]
+	for i in range(num_levels):
+		GA = cv2.pyrDown(GA)
+		GB = cv2.pyrDown(GB)
+		GM = cv2.pyrDown(GM)
+		gpA.append(np.float32(GA))
+		gpB.append(np.float32(GB))
+		gpM.append(np.float32(GM))
+
+	# generate Laplacian Pyramids for A,B and masks
+	lpA = [gpA[num_levels - 1]]  # the bottom of the Lap-pyr holds the last (smallest) Gauss level
+	lpB = [gpB[num_levels - 1]]
+	gpMr = [gpM[num_levels - 1]]
+	for i in range(num_levels - 1, 0, -1):
+		# Laplacian: subtarct upscaled version of lower level from current level
+		# to get the high frequencies
+		LA = np.subtract(gpA[i - 1], cv2.pyrUp(gpA[i]))
+		LB = np.subtract(gpB[i - 1], cv2.pyrUp(gpB[i]))
+		lpA.append(LA)
+		lpB.append(LB)
+		gpMr.append(gpM[i - 1])  # also reverse the masks
+
+	# Now blend images according to mask in each level
+	LS = []
+	for la, lb, gm in zip(lpA, lpB, gpMr):
+		gm = gm[:, :, np.newaxis]
+		ls = la * gm + lb * (1.0 - gm)
+		LS.append(ls)
+
+	# now reconstruct
+	ls_ = LS[0]
+	for i in range(1, num_levels):
+		ls_ = cv2.pyrUp(ls_)
+		ls_ = cv2.add(ls_, LS[i])
+	return ls_
+
+
+def merge_face(f, p, c):
+	# f 原图， p 人脸
+	y1, y2, x1, x2 = c
+	w = x2 - x1
+	h = y2 - y1
+
+	h_pad = int((512 - h) / 2)
+	w_pad = int((512 - w) / 2)
+	b = (y1-h_pad, y2+h_pad, x1-w_pad, x2+w_pad)
+	yy1, yy2, xx1, xx2 = b
+	ff = f.copy()[yy1: yy2, xx1: xx2]
+
+	mask = np.zeros_like(ff)
+	face = np.zeros_like(ff)
+	face[y1-yy1: y2-yy1, x1-xx1: x2-xx1] = p
+	mask[y1-yy1+15: y2-yy1-15, x1-xx1+15: x2-xx1-15] = 255
+	mask = cv2.GaussianBlur(mask, (15, 15), 0)
+	mask = mask / 255
+	# cv2.imwrite("ff.jpg", ff)
+	# cv2.imwrite("face.jpg", face)
+	# cv2.imwrite("mask.jpg", mask*255)
+
+	ff = np.float32(ff)
+	face = np.float32(face)
+	mask = np.float32(mask[:, :, 0])
+	# noinspection PyTypeChecker
+	img = Laplacian_Pyramid_Blending_with_mask(face, ff, mask, 1)
+	f[yy1: yy2, xx1: xx2] = img
+	return f
+
+
 def get_smoothened_boxes(boxes, T):
 	for i in range(len(boxes)):
 		if i + T > len(boxes):
@@ -179,6 +255,8 @@ def load_model(path):
 	return model.eval()
 
 def main():
+	restorer = GFPGANer(
+        	model_path='checkpoints/GFPGANv1.4.pth', upscale=4)
 	if not os.path.isfile(args.face):
 		raise ValueError('--face argument must be a valid path to video/image file')
 
@@ -266,10 +344,11 @@ def main():
 		
 		for p, f, c in zip(pred, frames, coords):
 			y1, y2, x1, x2 = c
-			p = cv2.resize(p.astype(np.uint8), (x2 - x1, y2 - y1))
-
-			f[y1:y2, x1:x2] = p
-			out.write(f)
+			_, _, p = restorer.enhance(p, only_center_face=True)
+            		p = cv2.resize(p.astype(np.uint8), (x2 - x1, y2 - y1))
+            		pp = merge_face(f, p, c)
+            		# f[y1:y2, x1:x2] = p
+            		out.write(pp)
 
 	out.release()
 
