@@ -6,6 +6,7 @@ from tqdm import tqdm
 from glob import glob
 import torch, face_detection
 from models import Wav2Lip
+from gfpgan import GFPGANer
 import platform
 
 parser = argparse.ArgumentParser(description='Inference code to lip-sync videos in the wild using Wav2Lip models')
@@ -107,10 +108,32 @@ def merge_face(f, p, c):
 	w = x2 - x1
 	h = y2 - y1
 
-	h_pad = int((512 - h) / 2)
-	w_pad = int((512 - w) / 2)
-	b = (y1-h_pad, y2+h_pad, x1-w_pad, x2+w_pad)
-	yy1, yy2, xx1, xx2 = b
+	pad = 512
+	while pad < min(2048, max(w, h)):
+		pad = pad * 2
+	h_pad = int((pad - h) / 2)
+	w_pad = int((pad - w) / 2)
+	height, width = f.shape[:2]
+
+	yy1 = y1 - h_pad
+	if yy1 < 0:
+		yy1 = 0
+	yy2 = yy1 + pad
+	if yy2 > height:
+		yy2 = height
+		yy1 = height - pad
+
+	xx1 = x1 - w_pad
+	if xx1 < 0:
+		xx1 = 0
+	xx2 = xx1 + pad
+	if xx2 > width:
+		xx2 = width
+		xx1 = width - pad
+
+	#print(y1, y2, h, h_pad, yy1, yy2)
+	#print(x1, x2, w, w_pad, xx1, xx2)
+	b = (yy1, yy2, xx1, xx2)
 	ff = f.copy()[yy1: yy2, xx1: xx2]
 
 	mask = np.zeros_like(ff)
@@ -345,10 +368,10 @@ def main():
 		for p, f, c in zip(pred, frames, coords):
 			y1, y2, x1, x2 = c
 			_, _, p = restorer.enhance(p, only_center_face=True)
-            		p = cv2.resize(p.astype(np.uint8), (x2 - x1, y2 - y1))
-            		pp = merge_face(f, p, c)
-            		# f[y1:y2, x1:x2] = p
-            		out.write(pp)
+			p = cv2.resize(p.astype(np.uint8), (x2 - x1, y2 - y1))
+			pp = merge_face(f, p, c)
+			# f[y1:y2, x1:x2] = p
+			out.write(pp)
 
 	out.release()
 
